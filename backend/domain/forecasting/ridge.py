@@ -4,7 +4,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..intake.timeline import Timeline
-from .features import FEATURE_NAMES, features_for
+from ..intake.versions import ScheduleSelection
+from .features import FEATURE_NAMES, features_with_selection
 
 
 RIDGE_MODEL = 'calendar_ridge'
@@ -17,9 +18,14 @@ class RidgeFit:
     coefficients: tuple[float, ...]
     training_rows: int
     last_target_index: int
+    schedule_selections: tuple[ScheduleSelection, ...] = ()
 
     def predict(self, features: tuple[float, ...]) -> float:
         return self.intercept + sum(weight * value for weight, value in zip(self.coefficients, features))
+
+    @property
+    def schedule_versions(self) -> tuple[ScheduleSelection, ...]:
+        return self.schedule_selections
 
 
 @dataclass(frozen=True)
@@ -27,20 +33,25 @@ class RidgeTraining:
     target_indices: tuple[int, ...]
     predictors: np.ndarray
     outcomes: np.ndarray
+    schedule_selections: tuple[ScheduleSelection, ...] = ()
 
     @classmethod
     def from_timeline(cls, timeline: Timeline, lead: int) -> 'RidgeTraining':
         indices = []
         predictors = []
+        selections = []
         for target in range(lead, len(timeline.actuals)):
-            features = features_for(timeline, target - lead, target)
-            if features is not None:
+            result = features_with_selection(timeline, target - lead, target)
+            if result is not None:
+                features, selection = result
                 indices.append(target)
                 predictors.append(features)
+                selections.append(selection)
         return cls(
             tuple(indices),
             np.asarray(predictors, dtype=float).reshape(-1, len(FEATURE_NAMES)),
             np.asarray([timeline.actuals[index] for index in indices], dtype=float),
+            tuple(selections),
         )
 
     def fit_through(self, origin: int, alpha: float) -> RidgeFit | None:
@@ -62,4 +73,11 @@ class RidgeTraining:
         )
         coefficients = standardized_weights / scale
         intercept = outcomes.mean() - center @ coefficients
-        return RidgeFit(float(intercept), tuple(map(float, coefficients)), count, self.target_indices[count - 1])
+        return RidgeFit(
+            float(intercept), tuple(map(float, coefficients)), count,
+            self.target_indices[count - 1], self.schedule_selections[:count],
+        )
+
+    @property
+    def schedule_versions(self) -> tuple[ScheduleSelection, ...]:
+        return self.schedule_selections

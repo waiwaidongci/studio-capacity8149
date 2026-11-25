@@ -21,7 +21,27 @@ def normalize(rows: list[dict]) -> tuple[str, list[tuple[str, dict]]]:
             raise Problem(422, 'invalid_row', f'Row {position}, {field}: {first["msg"]}') from None
     try:
         validate_rows(validated)
-        pairs = [(record_key(row), row.model_dump(mode='json')) for row in validated]
+        base_pairs = [(record_key(row), row.model_dump(mode='json')) for row in validated]
+        key_counts = {}
+        for key, _ in base_pairs:
+            key_counts[key] = key_counts.get(key, 0) + 1
+
+        pairs = []
+        for key, payload in base_pairs:
+            storage_key = key
+            if key_counts[key] > 1:
+                # Multiple traceable schedule versions share a service date.
+                # The domain checksum still canonicalizes the full payload; this
+                # key only satisfies the observation table's unique constraint.
+                payload_digest = sha256(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                               allow_nan=False, separators=(',', ':')).encode()
+                ).hexdigest()
+                version = payload.get('schedule_version')
+                discriminator = payload_digest if version is None else f'{version}:{payload_digest}'
+                storage_key = f'{key}#schedule-version={discriminator}'
+            pairs.append((storage_key, payload))
+
         if any(not isinstance(key, str) or not key.strip() for key, _ in pairs):
             raise ValueError('Observation keys must be nonempty strings')
         keys = {key for key, _ in pairs}
